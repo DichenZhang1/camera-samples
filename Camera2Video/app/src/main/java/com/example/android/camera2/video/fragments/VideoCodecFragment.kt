@@ -99,7 +99,7 @@ class VideoCodecFragment : Fragment() {
         @SuppressLint("InlinedApi")
         private fun enumerateVideoCodecs(dynamicRange: Long): List<VideoCodecInfo> {
             val videoCodecIdList = when {
-                dynamicRange == DynamicRangeProfiles.STANDARD -> listOf(VIDEO_CODEC_ID_H264)
+                dynamicRange == DynamicRangeProfiles.STANDARD -> listOf(VIDEO_CODEC_ID_HEVC)
                 dynamicRange < DynamicRangeProfiles.PUBLIC_MAX ->
                         listOf(VIDEO_CODEC_ID_HEVC, VIDEO_CODEC_ID_AV1)
                 else -> throw RuntimeException("Unrecognized dynamic range $dynamicRange")

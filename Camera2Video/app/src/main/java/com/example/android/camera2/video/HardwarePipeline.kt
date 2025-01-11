@@ -16,16 +16,20 @@
 
 package com.example.android.camera2.video.fragments
 
+import android.R.attr.bottom
+import android.R.attr.left
+import android.R.attr.right
+import android.R.attr.top
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.DataSpace
+import android.hardware.HardwareBuffer
+import android.hardware.SyncFence
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.DynamicRangeProfiles
-import android.hardware.HardwareBuffer
-import android.hardware.SyncFence
 import android.opengl.EGL14
 import android.opengl.EGL14.EGL_NO_DISPLAY
 import android.opengl.EGL14.EGL_NO_SURFACE
@@ -41,6 +45,7 @@ import android.opengl.GLES20.glFinish
 import android.opengl.GLES20.glFlush
 import android.opengl.GLES30
 import android.os.Build
+import android.os.Bundle
 import android.os.ConditionVariable
 import android.os.Handler
 import android.os.HandlerThread
@@ -52,15 +57,13 @@ import android.util.Size
 import android.view.Surface
 import android.view.SurfaceControl
 import androidx.annotation.RequiresApi
-import androidx.opengl.EGLExt.Companion.eglCreateSyncKHR
 import androidx.opengl.EGLImageKHR
 import com.example.android.camera.utils.AutoFitSurfaceView
+import com.example.android.camera2.video.EncoderWrapper
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.IntBuffer
-import kotlin.RuntimeException
 
-import com.example.android.camera2.video.EncoderWrapper
 
 /** Generates a fullscreen quad to cover the entire viewport. Applies the transform set on the
     camera surface to adjust for orientation and scaling when used for copying from the camera
@@ -322,10 +325,12 @@ private val EGL_SMPTE2086_WHITE_POINT_Y_EXT            = 0x3348
 private val EGL_SMPTE2086_MAX_LUMINANCE_EXT            = 0x3349
 private val EGL_SMPTE2086_MIN_LUMINANCE_EXT            = 0x334A
 
-class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, transfer: Int,
-        dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-        viewFinder: AutoFitSurfaceView) : Pipeline(width, height, fps, filterOn, dynamicRange,
-                characteristics, encoder, viewFinder) {
+class HardwarePipeline(
+    width: Int, height: Int, fps: Int, filterOn: Boolean, transfer: Int,
+    dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
+    viewFinder: AutoFitSurfaceView,
+) : Pipeline(width, height, fps, filterOn, dynamicRange,
+             characteristics, encoder, viewFinder) {
     private val renderThread: HandlerThread by lazy {
         val renderThread = HandlerThread("Camera2Video.RenderThread")
         renderThread.start()
@@ -335,8 +340,10 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
     private val renderHandler = RenderHandler(renderThread.getLooper(),
             width, height, fps, filterOn, transfer, dynamicRange, characteristics, encoder, viewFinder)
 
-    override fun createRecordRequest(session: CameraCaptureSession,
-            previewStabilization: Boolean) : CaptureRequest {
+    override fun createRecordRequest(
+        session: CameraCaptureSession,
+        previewStabilization: Boolean,
+    ) : CaptureRequest {
         return renderHandler.createRecordRequest(session, previewStabilization)
     }
 
@@ -388,9 +395,11 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
         renderHandler.waitCleanup()
     }
 
-    private class ShaderProgram(id: Int,
-                                vPositionLoc: Int,
-                                texMatrixLoc: Int) {
+    private class ShaderProgram(
+        id: Int,
+        vPositionLoc: Int,
+        texMatrixLoc: Int,
+    ) {
         private val id = id
         private val vPositionLoc = vPositionLoc
         private val texMatrixLoc = texMatrixLoc
@@ -420,11 +429,13 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
         }
     }
 
-    private class RenderHandler(looper: Looper, width: Int, height: Int, fps: Int,
-            filterOn: Boolean, transfer: Int, dynamicRange: Long,
-            characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-            viewFinder: AutoFitSurfaceView): Handler(looper),
-            SurfaceTexture.OnFrameAvailableListener {
+    private class RenderHandler(
+        looper: Looper, width: Int, height: Int, fps: Int,
+        filterOn: Boolean, transfer: Int, dynamicRange: Long,
+        characteristics: CameraCharacteristics, encoder: EncoderWrapper,
+        viewFinder: AutoFitSurfaceView,
+    ): Handler(looper),
+       SurfaceTexture.OnFrameAvailableListener {
         companion object {
             val MSG_CREATE_RESOURCES = 0
             val MSG_DESTROY_WINDOW_SURFACE = 1
@@ -510,12 +521,16 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
             currentlyRecording = false
         }
 
-        public fun createRecordRequest(session: CameraCaptureSession,
-                previewStabilization: Boolean) : CaptureRequest {
+        public fun createRecordRequest(
+            session: CameraCaptureSession,
+            previewStabilization: Boolean,
+        ) : CaptureRequest {
             cvResourcesCreated.block()
 
+            Log.e(TAG, "[dichenzhang] createRecordRequest(): width=" + width + " height=" + height)
+
             // Capture request holds references to target surfaces
-            return session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            return session.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 // Add the preview surface target
                 addTarget(cameraSurface)
 
@@ -525,6 +540,9 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
                     set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
                 }
+
+              // Enable Face Detection
+              set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE)
             }.build()
         }
 
@@ -810,8 +828,11 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
                     TransferFragment.LINEAR_ID -> createShader(GLES30.GL_FRAGMENT_SHADER,
                             HLG_TO_LINEAR_HDR_FSHADER)
                     TransferFragment.HLG_ID,
-                    TransferFragment.HLG_WORKAROUND_ID -> createShader(GLES30.GL_FRAGMENT_SHADER,
-                            PASSTHROUGH_HDR_FSHADER)
+                    TransferFragment.HLG_WORKAROUND_ID,
+                        -> createShader(
+                        GLES30.GL_FRAGMENT_SHADER,
+                        PASSTHROUGH_HDR_FSHADER
+                    )
                     else -> throw RuntimeException("Unexpected transfer " + transfer)
                 }
 
@@ -942,8 +963,10 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
             cvDestroyWindowSurface.block()
         }
 
-        private fun copyTexture(texId: Int, texture: SurfaceTexture, viewportRect: Rect,
-                shaderProgram: ShaderProgram, outputIsFramebuffer: Boolean) {
+        private fun copyTexture(
+            texId: Int, texture: SurfaceTexture, viewportRect: Rect,
+            shaderProgram: ShaderProgram, outputIsFramebuffer: Boolean,
+        ) {
             GLES30.glClearColor(0.0f, 0.0f, 0.0f, 1.0f)
             checkGlError("glClearColor")
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
@@ -1096,6 +1119,7 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
             var viewportHeight = height
 
             /** Swap width and height if the camera is rotated on its side. */
+            println("[dichenzhang] copyRenderToEncode(): orientation=" + orientation)
             if (orientation == 90 || orientation == 270) {
                 viewportWidth = height
                 viewportHeight = width
@@ -1104,7 +1128,8 @@ class HardwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean, tra
             copyTexture(renderTexId, renderTexture, Rect(0, 0, viewportWidth, viewportHeight),
                     renderToEncodeShaderProgram!!, false)
 
-            encoder.frameAvailable()
+          Log.e(TAG, "[dichenzhang] copyRenderToEncode(): frame available")
+          encoder.frameAvailable()
 
             EGL14.eglSwapBuffers(eglDisplay, eglEncoderSurface)
         }

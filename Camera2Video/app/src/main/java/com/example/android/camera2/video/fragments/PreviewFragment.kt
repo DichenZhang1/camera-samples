@@ -21,11 +21,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.ColorSpace
+import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.ColorSpaceProfiles
 import android.hardware.camera2.params.DynamicRangeProfiles
@@ -45,6 +47,7 @@ import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.MimeTypeMap
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -59,19 +62,18 @@ import com.example.android.camera2.video.CameraActivity
 import com.example.android.camera2.video.EncoderWrapper
 import com.example.android.camera2.video.R
 import com.example.android.camera2.video.databinding.FragmentPreviewBinding
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 class PreviewFragment : Fragment() {
 
@@ -174,7 +176,7 @@ class PreviewFragment : Fragment() {
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
-        savedInstanceState: Bundle?
+        savedInstanceState: Bundle?,
     ): View {
         _fragmentBinding = FragmentPreviewBinding.inflate(inflater, container, false)
 
@@ -198,10 +200,11 @@ class PreviewFragment : Fragment() {
             }
 
             override fun surfaceChanged(
-                    holder: SurfaceHolder,
-                    format: Int,
-                    width: Int,
-                    height: Int) = Unit
+                holder: SurfaceHolder,
+                format: Int,
+                width: Int,
+                height: Int,
+            ) = Unit
 
             override fun surfaceCreated(holder: SurfaceHolder) {
 
@@ -240,10 +243,62 @@ class PreviewFragment : Fragment() {
             orientationHint = 0
         }
 
+        println("[dichenzhang] createEncoder(): outputFile=$outputFile")
         return EncoderWrapper(width, height, RECORDER_VIDEO_BITRATE, args.fps,
                 args.dynamicRange, orientationHint, outputFile, args.useMediaRecorder,
                 args.videoCodec)
     }
+
+    // private class CameraCharacteristics {
+    //     var width: Int = 0
+    //     var height: Int = 0
+    //     var orientation: Int = 0
+    // }
+    //
+    // private fun getCameraCharacteristics(): CameraCharacteristics {
+    //     var cameraCharacteristics = CameraCharacteristics()
+    //     try {
+    //         val cameraId = cameraManager.cameraIdList[0] // Get the first camera ID (usually the back camera)
+    //         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+    //
+    //         val activeArraySize: Rect? = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+    //
+    //         if (activeArraySize != null) {
+    //             val width = activeArraySize.width()
+    //             val height = activeArraySize.height()
+    //
+    //             println("[dichenzhang] Active Array Size: Width = $width, Height = $height")
+    //             //Use width and height as needed.
+    //         } else {
+    //             println("[dichenzhang] SENSOR_INFO_ACTIVE_ARRAY_SIZE is not available for this camera.")
+    //         }
+    //
+    //
+    //         //Example of getting the sensor pixel array size:
+    //         val sensorPixelArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+    //         if (sensorPixelArraySize != null) {
+    //             val width = sensorPixelArraySize.width
+    //             val height = sensorPixelArraySize.height
+    //             println("[dichenzhang] Sensor Pixel Array Size: Width = $width, Height = $height")
+    //             cameraCharacteristics.width = width
+    //             cameraCharacteristics.height = height
+    //         } else {
+    //             println("[dichenzhang] SENSOR_INFO_PIXEL_ARRAY_SIZE is not available for this camera.")
+    //         }
+    //
+    //         val sensorPixelOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
+    //         if (sensorPixelOrientation != null) {
+    //             println("[dichenzhang] Sensor Pixel Array Size: orientation = $sensorPixelOrientation")
+    //             cameraCharacteristics.orientation = sensorPixelOrientation
+    //         } else {
+    //             println("[dichenzhang] SENSOR_ORIENTATION is not available for this camera.")
+    //         }
+    //
+    //     } catch (e: Exception) {
+    //         println("[dichenzhang] Error getting camera characteristics: ${e.message}")
+    //         e.printStackTrace()
+    //     }
+    // }
 
     /**
      * Begin all camera operations in a coroutine in the main thread. This function:
@@ -253,6 +308,26 @@ class PreviewFragment : Fragment() {
      */
     @SuppressLint("ClickableViewAccessibility")
     private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
+        // var cameraCharacteristics = getCameraCharacteristics()
+        // Set up the listener for SeekBar changes
+        var qp_offset: Int = 0
+        fragmentBinding.roiSeekBar!!.min = -20
+        fragmentBinding.roiSeekBar!!.max = 20
+        fragmentBinding.roiSeekBar!!.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                // Update the TextView with the current progress
+                fragmentBinding.roiTextView!!.text = "QP offset: $progress"
+                qp_offset = progress
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                // Called when the user starts touching the SeekBar
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                // Called when the user stops touching the SeekBar
+            }
+        })
 
         // Open the selected camera
         camera = openCamera(cameraManager, args.cameraId, cameraHandler)
@@ -267,7 +342,83 @@ class PreviewFragment : Fragment() {
         // Sends the capture request as frequently as possible until the session is torn down or
         //  session.stopRepeating() is called
         if (previewRequest == null) {
-            session.setRepeatingRequest(recordRequest, null, cameraHandler)
+            session.setRepeatingRequest(recordRequest, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    if (recordingStarted) {
+                        if (orientation != 270) {
+                            Log.e(TAG, "[dichenzhang] onCaptureCompleted() only 90 degree rotation is supported")
+                            return
+                        }
+                        val faces = result.get(CaptureResult.STATISTICS_FACES)
+                        if (faces != null) {
+                            Log.d(TAG, "[dichenzhang] Number of faces detected (Recording): ${faces.size}")
+                            for (face in faces) {
+                                Log.d(TAG, "[dichenzhang] Face Bounds (Recording): ${face.bounds}")
+                                // Process face data during recording
+                                val bundle = Bundle()
+
+                                val encoderWidth = encoder.getWidth()
+                                val encoderHeight = encoder.getHeight()
+                                val sensorWidth = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)?.width
+                                val sensorHeight = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)?.height
+                                val orientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                                if (orientation != 270) {
+                                    Log.e(TAG, "[dichenzhang] orientation not supported yet. orientation=" + orientation)
+                                    return
+                                }
+                                if (sensorHeight == null || sensorWidth == null) {
+                                    Log.e(TAG, "[dichenzhang] sensore width or height is null")
+                                    return
+                                }
+
+                                var top: Int = (sensorWidth - face.bounds.right) * encoderHeight / sensorWidth
+                                var left: Int = face.bounds.top * encoderWidth / sensorHeight
+                                var bottom: Int = (sensorWidth - face.bounds.left) * encoderHeight / sensorWidth
+                                var right: Int = face.bounds.bottom * encoderWidth / sensorHeight
+
+                                // Set Qualcomm RoI via Qualcomm vendor key
+                                val config = String.format(
+                                    "%d,%d-%d,%d=%d;",
+                                    top,
+                                    left,
+                                    bottom,
+                                    right,
+                                    qp_offset
+                                )
+
+                                Log.i(TAG, "[dichenzhang] found faces: " + config)
+
+                                bundle.putString("vendor.qti-ext-enc-roiinfo.rect-payload", config)
+                                // Set MediaTek RoI via MediaTek vendor key
+                                val kBlockSize = 32
+                                val kWidthInMBs: Int = (1080 + kBlockSize - 1) / kBlockSize
+                                val kHeightInMBs: Int = (1920 + kBlockSize - 1) / kBlockSize
+                                val kNumMBs = (kWidthInMBs * kHeightInMBs)
+                                val roi = ByteArray(kNumMBs)
+                                for (i in 0 until kNumMBs) {
+                                    roi[i] = 0x0.toByte()
+                                }
+                                val offset: Int = qp_offset * (-1)
+                                top /= kBlockSize
+                                left /= kBlockSize
+                                bottom /= kBlockSize
+                                right /= kBlockSize
+                                for (i in top..bottom) {
+                                    for (j in left..right) {
+                                        roi[i * kWidthInMBs + j] = offset.toByte()
+                                    }
+                                }
+                                bundle.putByteArray("vendor.mtk.ext.venc.qpmap.data", roi);
+                                encoder.runTimeConfigure(bundle)
+                            }
+                        }
+                    }
+                }
+            }, cameraHandler)
         } else {
             session.setRepeatingRequest(previewRequest!!, null, cameraHandler)
         }
@@ -303,9 +454,11 @@ class PreviewFragment : Fragment() {
 
                             session.setRepeatingRequest(recordRequest,
                                     object : CameraCaptureSession.CaptureCallback() {
-                                override fun onCaptureCompleted(session: CameraCaptureSession,
-                                                                request: CaptureRequest,
-                                                                result: TotalCaptureResult) {
+                                override fun onCaptureCompleted(
+                                    session: CameraCaptureSession,
+                                    request: CaptureRequest,
+                                    result: TotalCaptureResult,
+                                ) {
                                     if (isCurrentlyRecording()) {
                                         encoder.frameAvailable()
                                     }
@@ -314,7 +467,7 @@ class PreviewFragment : Fragment() {
                         }
 
                         recordingStartMillis = System.currentTimeMillis()
-                        Log.d(TAG, "Recording started")
+                        Log.d(TAG, "[dichenzhang] Recording started")
 
                         // Set color to RED and show timer when recording begins
                         fragmentBinding.captureButton.post {
@@ -326,85 +479,87 @@ class PreviewFragment : Fragment() {
                             fragmentBinding.captureTimer?.visibility = View.VISIBLE
                             fragmentBinding.captureTimer?.start()
                         }
+                    } else {
+                        cvRecordingStarted.block()
+
+                        /* Wait for at least one frame to process so we don't have an empty video */
+                        encoder.waitForFirstFrame()
+
+                        session.stopRepeating()
+                        session.close()
+
+                        pipeline.clearFrameListener()
+                        fragmentBinding.captureButton.setOnTouchListener(null)
+
+                        // Set color to GRAY and hide timer when recording stops
+                        fragmentBinding.captureButton.post {
+                            fragmentBinding.captureButton.background =
+                                context?.let {
+                                    ContextCompat.getDrawable(it,
+                                                              R.drawable.ic_shutter_normal)
+                                }
+                            fragmentBinding.captureTimer?.visibility = View.GONE
+                            fragmentBinding.captureTimer?.stop()
+                        }
+
+                        /* Wait until the session signals onReady */
+                        cvRecordingComplete.block()
+
+                        // Unlocks screen rotation after recording finished
+                        requireActivity().requestedOrientation =
+                            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+                        // Requires recording of at least MIN_REQUIRED_RECORDING_TIME_MILLIS
+                        val elapsedTimeMillis = System.currentTimeMillis() - recordingStartMillis
+                        if (elapsedTimeMillis < MIN_REQUIRED_RECORDING_TIME_MILLIS) {
+                            delay(MIN_REQUIRED_RECORDING_TIME_MILLIS - elapsedTimeMillis)
+                        }
+
+                        delay(CameraActivity.ANIMATION_SLOW_MILLIS)
+
+                        pipeline.cleanup()
+
+                        Log.d(TAG, "Recording stopped. Output file: $outputFile")
+
+                        if (encoder.shutdown()) {
+                            // Broadcasts the media file to the rest of the system
+                            MediaScannerConnection.scanFile(
+                                requireView().context, arrayOf(outputFile.absolutePath), null, null)
+
+                            if (outputFile.exists()) {
+                                // Launch external activity via intent to play video recorded using our provider
+                                startActivity(Intent().apply {
+                                    action = Intent.ACTION_VIEW
+                                    type = MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(outputFile.extension)
+                                    val authority = "${BuildConfig.APPLICATION_ID}.provider"
+                                    data = FileProvider.getUriForFile(view.context, authority, outputFile)
+                                    flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                      Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                })
+                            } else {
+                                // TODO:
+                                //  1. Move the callback to ACTION_DOWN, activating it on the second press
+                                //  2. Add an animation to the button before the user can press it again
+                                Handler(Looper.getMainLooper()).post {
+                                    Toast.makeText(activity, R.string.error_file_not_found,
+                                                   Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        } else {
+                            Handler(Looper.getMainLooper()).post {
+                                Toast.makeText(activity, R.string.recorder_shutdown_error,
+                                               Toast.LENGTH_LONG).show()
+                            }
+                        }
+                        Handler(Looper.getMainLooper()).post {
+                            navController.popBackStack()
+                        }
                     }
                 }
 
                 MotionEvent.ACTION_UP -> lifecycleScope.launch(Dispatchers.IO) {
-                    cvRecordingStarted.block()
 
-                    /* Wait for at least one frame to process so we don't have an empty video */
-                    encoder.waitForFirstFrame()
-
-                    session.stopRepeating()
-                    session.close()
-
-                    pipeline.clearFrameListener()
-                    fragmentBinding.captureButton.setOnTouchListener(null)
-
-                    // Set color to GRAY and hide timer when recording stops
-                    fragmentBinding.captureButton.post {
-                        fragmentBinding.captureButton.background =
-                                context?.let {
-                                    ContextCompat.getDrawable(it,
-                                            R.drawable.ic_shutter_normal)
-                                }
-                        fragmentBinding.captureTimer?.visibility = View.GONE
-                        fragmentBinding.captureTimer?.stop()
-                    }
-
-                    /* Wait until the session signals onReady */
-                    cvRecordingComplete.block()
-
-                    // Unlocks screen rotation after recording finished
-                    requireActivity().requestedOrientation =
-                            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-
-                    // Requires recording of at least MIN_REQUIRED_RECORDING_TIME_MILLIS
-                    val elapsedTimeMillis = System.currentTimeMillis() - recordingStartMillis
-                    if (elapsedTimeMillis < MIN_REQUIRED_RECORDING_TIME_MILLIS) {
-                        delay(MIN_REQUIRED_RECORDING_TIME_MILLIS - elapsedTimeMillis)
-                    }
-
-                    delay(CameraActivity.ANIMATION_SLOW_MILLIS)
-
-                    pipeline.cleanup()
-
-                    Log.d(TAG, "Recording stopped. Output file: $outputFile")
-
-                    if (encoder.shutdown()) {
-                        // Broadcasts the media file to the rest of the system
-                        MediaScannerConnection.scanFile(
-                                requireView().context, arrayOf(outputFile.absolutePath), null, null)
-
-                        if (outputFile.exists()) {
-                            // Launch external activity via intent to play video recorded using our provider
-                            startActivity(Intent().apply {
-                                action = Intent.ACTION_VIEW
-                                type = MimeTypeMap.getSingleton()
-                                        .getMimeTypeFromExtension(outputFile.extension)
-                                val authority = "${BuildConfig.APPLICATION_ID}.provider"
-                                data = FileProvider.getUriForFile(view.context, authority, outputFile)
-                                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                        Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            })
-                        } else {
-                            // TODO: 
-                            //  1. Move the callback to ACTION_DOWN, activating it on the second press
-                            //  2. Add an animation to the button before the user can press it again
-                            Handler(Looper.getMainLooper()).post {
-                                Toast.makeText(activity, R.string.error_file_not_found,
-                                        Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    } else {
-                        Handler(Looper.getMainLooper()).post {
-                            Toast.makeText(activity, R.string.recorder_shutdown_error,
-                                    Toast.LENGTH_LONG).show()
-                        }
-                    }
-                    Handler(Looper.getMainLooper()).post {
-                        navController.popBackStack()
-                    }
                 }
             }
 
@@ -415,9 +570,9 @@ class PreviewFragment : Fragment() {
     /** Opens the camera and returns the opened device (as the result of the suspend coroutine) */
     @SuppressLint("MissingPermission")
     private suspend fun openCamera(
-            manager: CameraManager,
-            cameraId: String,
-            handler: Handler? = null
+        manager: CameraManager,
+        cameraId: String,
+        handler: Handler? = null,
     ): CameraDevice = suspendCancellableCoroutine { cont ->
         manager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) = cont.resume(device)
@@ -447,10 +602,10 @@ class PreviewFragment : Fragment() {
      * Creates a [CameraCaptureSession] with the dynamic range profile set.
      */
     private fun setupSessionWithDynamicRangeProfile(
-            device: CameraDevice,
-            targets: List<Surface>,
-            handler: Handler,
-            stateCallback: CameraCaptureSession.StateCallback
+        device: CameraDevice,
+        targets: List<Surface>,
+        handler: Handler,
+        stateCallback: CameraCaptureSession.StateCallback,
     ): Boolean {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             val outputConfigs = mutableListOf<OutputConfiguration>()
@@ -480,10 +635,10 @@ class PreviewFragment : Fragment() {
      * suspend coroutine)
      */
     private suspend fun createCaptureSession(
-            device: CameraDevice,
-            targets: List<Surface>,
-            handler: Handler,
-            recordingCompleteOnClose: Boolean
+        device: CameraDevice,
+        targets: List<Surface>,
+        handler: Handler,
+        recordingCompleteOnClose: Boolean,
     ): CameraCaptureSession = suspendCoroutine { cont ->
         val stateCallback = object: CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) = cont.resume(session)
@@ -534,13 +689,13 @@ class PreviewFragment : Fragment() {
     companion object {
         private val TAG = PreviewFragment::class.java.simpleName
 
-        private const val RECORDER_VIDEO_BITRATE: Int = 10_000_000
+        private const val RECORDER_VIDEO_BITRATE: Int = 400_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
         /** Creates a [File] named with the current date and time */
         private fun createFile(context: Context, extension: String): File {
             val sdf = SimpleDateFormat("yyyy_MM_dd_HH_mm_ss_SSS", Locale.US)
-            return File(context.filesDir, "VID_${sdf.format(Date())}.$extension")
+            return File("/sdcard/DCIM/Camera/", "camera2_roi_prototype.$extension")
         }
     }
 }
