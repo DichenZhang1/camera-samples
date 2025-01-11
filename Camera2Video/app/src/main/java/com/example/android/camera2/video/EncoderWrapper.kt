@@ -22,34 +22,34 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaRecorder
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.util.Log
 import android.view.Surface
-
 import com.example.android.camera2.video.fragments.VideoCodecFragment
-
 import java.io.File
-import java.io.IOException
 import java.lang.ref.WeakReference
 import java.nio.ByteBuffer
 
 /**
  * Encodes video by streaming to disk.
  */
-class EncoderWrapper(width: Int,
-                     height: Int,
-                     bitRate: Int,
-                     frameRate: Int,
-                     dynamicRange: Long,
-                     orientationHint: Int,
-                     outputFile: File,
-                     useMediaRecorder: Boolean,
-                     videoCodec: Int) {
+class EncoderWrapper(
+    width: Int,
+    height: Int,
+    bitRate: Int,
+    frameRate: Int,
+    dynamicRange: Long,
+    orientationHint: Int,
+    outputFile: File,
+    useMediaRecorder: Boolean,
+    videoCodec: Int,
+) {
     companion object {
         val TAG = "EncoderWrapper"
-        val VERBOSE = false
+        val VERBOSE = true
         val IFRAME_INTERVAL = 1 // sync one frame every second
     }
 
@@ -170,6 +170,14 @@ class EncoderWrapper(width: Int,
             format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL)
 
+            // Start Qualcomm ROI
+            format.setString("vendor.qti-ext-enc-roiinfo.type", "rect")
+
+            // Start MediaTek ROI
+            format.setInteger("vendor.mtk.ext.venc.qpmap.feature-on", 1);
+            format.setInteger("vendor.mtk.ext.venc.qpmap.frame-level-qp", 28);
+            format.setInteger("vendor.mtk.ext.venc.qpmap.mode", 1);
+
             if (codecProfile != -1) {
                 format.setInteger(MediaFormat.KEY_PROFILE, codecProfile)
                 format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
@@ -264,10 +272,27 @@ class EncoderWrapper(width: Int,
         }
     }
 
+    public fun runTimeConfigure(bundle : Bundle) {
+        if (mUseMediaRecorder) {
+            return
+        }
+
+        Log.e(TAG, "[dichenzhang] EncoderWrapper::runTimeConfigure(): bundle=" + bundle);
+        mEncoder!!.setParameters(bundle)
+    }
+
     public fun waitForFirstFrame() {
         if (!mUseMediaRecorder) {
             mEncoderThread!!.waitForFirstFrame()
         }
+    }
+
+    public fun getWidth(): Int {
+        return mWidth
+    }
+
+    public fun getHeight(): Int {
+        return mHeight
     }
 
     /**
@@ -285,9 +310,11 @@ class EncoderWrapper(width: Int,
      * should be fully started before the thread is created, and not shut down until this
      * thread has been joined.
      */
-    private class EncoderThread(mediaCodec: MediaCodec,
-                                outputFile: File,
-                                orientationHint: Int): Thread() {
+    private class EncoderThread(
+        mediaCodec: MediaCodec,
+        outputFile: File,
+        orientationHint: Int,
+    ): Thread() {
         val mEncoder = mediaCodec
         var mEncodedFormat: MediaFormat? = null
         val mBufferInfo = MediaCodec.BufferInfo()
