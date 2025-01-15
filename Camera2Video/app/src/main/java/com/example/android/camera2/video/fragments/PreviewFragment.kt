@@ -249,57 +249,6 @@ class PreviewFragment : Fragment() {
                 args.videoCodec)
     }
 
-    // private class CameraCharacteristics {
-    //     var width: Int = 0
-    //     var height: Int = 0
-    //     var orientation: Int = 0
-    // }
-    //
-    // private fun getCameraCharacteristics(): CameraCharacteristics {
-    //     var cameraCharacteristics = CameraCharacteristics()
-    //     try {
-    //         val cameraId = cameraManager.cameraIdList[0] // Get the first camera ID (usually the back camera)
-    //         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-    //
-    //         val activeArraySize: Rect? = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-    //
-    //         if (activeArraySize != null) {
-    //             val width = activeArraySize.width()
-    //             val height = activeArraySize.height()
-    //
-    //             println("[dichenzhang] Active Array Size: Width = $width, Height = $height")
-    //             //Use width and height as needed.
-    //         } else {
-    //             println("[dichenzhang] SENSOR_INFO_ACTIVE_ARRAY_SIZE is not available for this camera.")
-    //         }
-    //
-    //
-    //         //Example of getting the sensor pixel array size:
-    //         val sensorPixelArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
-    //         if (sensorPixelArraySize != null) {
-    //             val width = sensorPixelArraySize.width
-    //             val height = sensorPixelArraySize.height
-    //             println("[dichenzhang] Sensor Pixel Array Size: Width = $width, Height = $height")
-    //             cameraCharacteristics.width = width
-    //             cameraCharacteristics.height = height
-    //         } else {
-    //             println("[dichenzhang] SENSOR_INFO_PIXEL_ARRAY_SIZE is not available for this camera.")
-    //         }
-    //
-    //         val sensorPixelOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
-    //         if (sensorPixelOrientation != null) {
-    //             println("[dichenzhang] Sensor Pixel Array Size: orientation = $sensorPixelOrientation")
-    //             cameraCharacteristics.orientation = sensorPixelOrientation
-    //         } else {
-    //             println("[dichenzhang] SENSOR_ORIENTATION is not available for this camera.")
-    //         }
-    //
-    //     } catch (e: Exception) {
-    //         println("[dichenzhang] Error getting camera characteristics: ${e.message}")
-    //         e.printStackTrace()
-    //     }
-    // }
-
     /**
      * Begin all camera operations in a coroutine in the main thread. This function:
      * - Opens the camera
@@ -395,8 +344,8 @@ class PreviewFragment : Fragment() {
                                 bundle.putString("vendor.qti-ext-enc-roiinfo.rect-payload", config)
                                 // Set MediaTek RoI via MediaTek vendor key
                                 val kBlockSize = 32
-                                val kWidthInMBs: Int = (1080 + kBlockSize - 1) / kBlockSize
-                                val kHeightInMBs: Int = (1920 + kBlockSize - 1) / kBlockSize
+                                val kWidthInMBs: Int = (encoderWidth + kBlockSize - 1) / kBlockSize
+                                val kHeightInMBs: Int = (encoderHeight + kBlockSize - 1) / kBlockSize
                                 val kNumMBs = (kWidthInMBs * kHeightInMBs)
                                 val roi = ByteArray(kNumMBs)
                                 for (i in 0 until kNumMBs) {
