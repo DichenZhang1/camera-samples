@@ -27,7 +27,7 @@ import com.example.android.camera2.video.EncoderWrapper
 
 abstract class Pipeline(width: Int, height: Int, fps: Int, filterOn: Boolean,
         dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-        viewFinder: AutoFitSurfaceView) {
+        referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView) {
     protected val width = width
     protected val height = height
     protected val fps = fps
@@ -35,6 +35,7 @@ abstract class Pipeline(width: Int, height: Int, fps: Int, filterOn: Boolean,
     protected val dynamicRange = dynamicRange
     protected val characteristics = characteristics
     protected val encoder = encoder
+    protected val referenceEncoder = encoder
     protected val viewFinder = viewFinder
 
     open public fun createPreviewRequest(session: CameraCaptureSession,
@@ -55,7 +56,7 @@ abstract class Pipeline(width: Int, height: Int, fps: Int, filterOn: Boolean,
 
     public abstract fun getRecordTargets(): List<Surface>
 
-    open public fun actionDown(encoderSurface: Surface) { }
+    open public fun actionDown(encoderSurface: Surface, isReference: Boolean) { }
 
     open public fun clearFrameListener() { }
 

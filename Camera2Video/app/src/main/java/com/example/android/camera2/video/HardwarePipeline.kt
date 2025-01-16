@@ -16,10 +16,6 @@
 
 package com.example.android.camera2.video.fragments
 
-import android.R.attr.bottom
-import android.R.attr.left
-import android.R.attr.right
-import android.R.attr.top
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.DataSpace
@@ -45,7 +41,6 @@ import android.opengl.GLES20.glFinish
 import android.opengl.GLES20.glFlush
 import android.opengl.GLES30
 import android.os.Build
-import android.os.Bundle
 import android.os.ConditionVariable
 import android.os.Handler
 import android.os.HandlerThread
@@ -328,9 +323,9 @@ private val EGL_SMPTE2086_MIN_LUMINANCE_EXT            = 0x334A
 class HardwarePipeline(
     width: Int, height: Int, fps: Int, filterOn: Boolean, transfer: Int,
     dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-    viewFinder: AutoFitSurfaceView,
+    referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView,
 ) : Pipeline(width, height, fps, filterOn, dynamicRange,
-             characteristics, encoder, viewFinder) {
+             characteristics, encoder, referenceEncoder, viewFinder) {
     private val renderThread: HandlerThread by lazy {
         val renderThread = HandlerThread("Camera2Video.RenderThread")
         renderThread.start()
@@ -338,7 +333,7 @@ class HardwarePipeline(
     }
 
     private val renderHandler = RenderHandler(renderThread.getLooper(),
-            width, height, fps, filterOn, transfer, dynamicRange, characteristics, encoder, viewFinder)
+            width, height, fps, filterOn, transfer, dynamicRange, characteristics, encoder, referenceEncoder, viewFinder)
 
     override fun createRecordRequest(
         session: CameraCaptureSession,
@@ -378,9 +373,9 @@ class HardwarePipeline(
         return renderHandler.getTargets()
     }
 
-    override fun actionDown(encoderSurface: Surface) {
+    override fun actionDown(encoderSurface: Surface, isReference: Boolean) {
         renderHandler.sendMessage(renderHandler.obtainMessage(
-                RenderHandler.MSG_ACTION_DOWN, 0, 0, encoderSurface))
+                RenderHandler.MSG_ACTION_DOWN, if (isReference) 1 else 0, 0, encoderSurface))
     }
 
     override fun clearFrameListener() {
@@ -433,7 +428,7 @@ class HardwarePipeline(
         looper: Looper, width: Int, height: Int, fps: Int,
         filterOn: Boolean, transfer: Int, dynamicRange: Long,
         characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-        viewFinder: AutoFitSurfaceView,
+        referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView,
     ): Handler(looper),
        SurfaceTexture.OnFrameAvailableListener {
         companion object {
@@ -452,6 +447,7 @@ class HardwarePipeline(
         private val transfer = transfer
         private val dynamicRange = dynamicRange
         private val encoder = encoder
+        private val referenceEncoder = referenceEncoder
         private val viewFinder = viewFinder
 
         private var previewSize = Size(0, 0)
@@ -498,6 +494,7 @@ class HardwarePipeline(
         private var eglConfig: EGLConfig? = null
         private var eglRenderSurface: EGLSurface? = EGL_NO_SURFACE
         private var eglEncoderSurface: EGLSurface? = EGL_NO_SURFACE
+        private var eglReferenceEncoderSurface: EGLSurface? = EGL_NO_SURFACE
         private var eglWindowSurface: EGLSurface? = EGL_NO_SURFACE
         private var vertexShader = 0
         private var cameraToRenderFragmentShader = 0
@@ -530,7 +527,7 @@ class HardwarePipeline(
             Log.e(TAG, "[dichenzhang] createRecordRequest(): width=" + width + " height=" + height)
 
             // Capture request holds references to target surfaces
-            return session.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+            return session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 // Add the preview surface target
                 addTarget(cameraSurface)
 
@@ -1134,6 +1131,26 @@ class HardwarePipeline(
             EGL14.eglSwapBuffers(eglDisplay, eglEncoderSurface)
         }
 
+        private fun copyRenderToReferenceEncode() {
+          EGL14.eglMakeCurrent(eglDisplay, eglReferenceEncoderSurface, eglRenderSurface, eglContext)
+
+          var viewportWidth = width
+          var viewportHeight = height
+
+          /** Swap width and height if the camera is rotated on its side. */
+          if (orientation == 90 || orientation == 270) {
+            viewportWidth = height
+            viewportHeight = width
+          }
+
+          copyTexture(renderTexId, renderTexture, Rect(0, 0, viewportWidth, viewportHeight),
+                      renderToEncodeShaderProgram!!, false)
+
+          referenceEncoder.frameAvailable()
+
+          EGL14.eglSwapBuffers(eglDisplay, eglReferenceEncoderSurface)
+      }
+
         @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         private fun createSyncFence() : SyncFence? {
             if (!supportsNativeFences) {
@@ -1153,14 +1170,32 @@ class HardwarePipeline(
             }
         }
 
-        private fun actionDown(encoderSurface: Surface) {
+        private fun actionDownImpl(encoderSurface: Surface, isReference: Int) {
             val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
-            eglEncoderSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig,
-                    encoderSurface, surfaceAttribs, 0)
-            if (eglEncoderSurface == EGL_NO_SURFACE) {
+            if (isReference == 0) {
+              eglEncoderSurface = EGL14.eglCreateWindowSurface(
+                eglDisplay, eglConfig,
+                encoderSurface, surfaceAttribs, 0
+              )
+              if (eglEncoderSurface == EGL_NO_SURFACE) {
                 val error = EGL14.eglGetError()
-                throw RuntimeException("Failed to create EGL encoder surface"
-                        + ": eglGetError = 0x" + Integer.toHexString(error))
+                throw RuntimeException(
+                  "Failed to create EGL encoder surface"
+                    + ": eglGetError = 0x" + Integer.toHexString(error)
+                )
+              }
+            } else {
+              eglReferenceEncoderSurface = EGL14.eglCreateWindowSurface(
+                eglDisplay, eglConfig,
+                encoderSurface, surfaceAttribs, 0
+              )
+              if (eglReferenceEncoderSurface == EGL_NO_SURFACE) {
+                val error = EGL14.eglGetError()
+                throw RuntimeException(
+                  "Failed to create EGL reference encoder surface"
+                    + ": eglGetError = 0x" + Integer.toHexString(error)
+                )
+              }
             }
         }
 
@@ -1176,6 +1211,8 @@ class HardwarePipeline(
         private fun cleanup() {
             EGL14.eglDestroySurface(eglDisplay, eglEncoderSurface)
             eglEncoderSurface = EGL_NO_SURFACE
+            EGL14.eglDestroySurface(eglDisplay, eglReferenceEncoderSurface)
+            eglReferenceEncoderSurface = EGL_NO_SURFACE
             EGL14.eglDestroySurface(eglDisplay, eglRenderSurface)
             eglRenderSurface = EGL_NO_SURFACE
 
@@ -1222,6 +1259,11 @@ class HardwarePipeline(
             if (eglEncoderSurface != EGL_NO_SURFACE && currentlyRecording) {
                 copyRenderToEncode()
             }
+
+            /** Copy to the reference encoder surface if we're currently recording. */
+            if (eglReferenceEncoderSurface != EGL_NO_SURFACE && currentlyRecording) {
+                copyRenderToReferenceEncode()
+            }
         }
 
         private fun isHDR(): Boolean {
@@ -1236,7 +1278,7 @@ class HardwarePipeline(
             when (msg.what) {
                 MSG_CREATE_RESOURCES -> createResources(msg.obj as Surface)
                 MSG_DESTROY_WINDOW_SURFACE -> destroyWindowSurface()
-                MSG_ACTION_DOWN -> actionDown(msg.obj as Surface)
+                MSG_ACTION_DOWN -> actionDownImpl(msg.obj as Surface, msg.arg1)
                 MSG_CLEAR_FRAME_LISTENER -> clearFrameListener()
                 MSG_CLEANUP -> cleanup()
                 MSG_ON_FRAME_AVAILABLE -> onFrameAvailableImpl(msg.obj as SurfaceTexture)

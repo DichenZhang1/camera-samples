@@ -95,10 +95,10 @@ class PreviewFragment : Fragment() {
     private val pipeline: Pipeline by lazy {
         if (args.useHardware) {
             HardwarePipeline(args.width, args.height, args.fps, args.filterOn, args.transfer,
-                    args.dynamicRange, characteristics, encoder, fragmentBinding.viewFinder)
+                    args.dynamicRange, characteristics, encoder, referenceEncoder, fragmentBinding.viewFinder)
         } else {
             SoftwarePipeline(args.width, args.height, args.fps, args.filterOn,
-                    args.dynamicRange, characteristics, encoder, fragmentBinding.viewFinder)
+                    args.dynamicRange, characteristics, encoder, referenceEncoder, fragmentBinding.viewFinder)
         }
     }
 
@@ -123,6 +123,7 @@ class PreviewFragment : Fragment() {
 
     /** File where the recording will be saved */
     private val outputFile: File by lazy { createFile(requireContext(), "mp4") }
+    private val referenceOutputFile: File by lazy { createFile(requireContext(), "ref.mp4") }
 
     /**
      * Setup a [Surface] for the encoder
@@ -131,8 +132,13 @@ class PreviewFragment : Fragment() {
         encoder.getInputSurface()
     }
 
+    private val referenceEncoderSurface: Surface by lazy {
+        referenceEncoder.getInputSurface()
+    }
+
     /** [EncoderWrapper] utility class */
-    private val encoder: EncoderWrapper by lazy { createEncoder() }
+    private val encoder: EncoderWrapper by lazy { createEncoder(outputFile) }
+    private val referenceEncoder: EncoderWrapper by lazy { createEncoder(referenceOutputFile) }
 
     /** [HandlerThread] where all camera operations run */
     private val cameraThread = HandlerThread("CameraThread").apply { start() }
@@ -230,7 +236,7 @@ class PreviewFragment : Fragment() {
         return recordingStarted && !recordingComplete
     }
 
-    private fun createEncoder(): EncoderWrapper {
+    private fun createEncoder(outputFile: File): EncoderWrapper {
         var width = args.width
         var height = args.height
         var orientationHint = orientation
@@ -383,11 +389,13 @@ class PreviewFragment : Fragment() {
                         requireActivity().requestedOrientation =
                                 ActivityInfo.SCREEN_ORIENTATION_LOCKED
 
-                        pipeline.actionDown(encoderSurface)
+                        pipeline.actionDown(encoderSurface, false)
+                        pipeline.actionDown(referenceEncoderSurface, true)
 
                         // Finalizes encoder setup and starts recording
                         recordingStarted = true
                         encoder.start()
+                        referenceEncoder.start()
                         cvRecordingStarted.open()
                         pipeline.startRecording()
 
@@ -410,6 +418,7 @@ class PreviewFragment : Fragment() {
                                 ) {
                                     if (isCurrentlyRecording()) {
                                         encoder.frameAvailable()
+                                        referenceEncoder.frameAvailable()
                                     }
                                 }
                             }, cameraHandler)
@@ -433,6 +442,7 @@ class PreviewFragment : Fragment() {
 
                         /* Wait for at least one frame to process so we don't have an empty video */
                         encoder.waitForFirstFrame()
+                        referenceEncoder.waitForFirstFrame()
 
                         session.stopRepeating()
                         session.close()
@@ -470,11 +480,10 @@ class PreviewFragment : Fragment() {
 
                         Log.d(TAG, "Recording stopped. Output file: $outputFile")
 
-                        if (encoder.shutdown()) {
+                        if (encoder.shutdown() && referenceEncoder.shutdown()) {
                             // Broadcasts the media file to the rest of the system
                             MediaScannerConnection.scanFile(
                                 requireView().context, arrayOf(outputFile.absolutePath), null, null)
-
                             if (outputFile.exists()) {
                                 // Launch external activity via intent to play video recorded using our provider
                                 startActivity(Intent().apply {
@@ -483,6 +492,29 @@ class PreviewFragment : Fragment() {
                                         .getMimeTypeFromExtension(outputFile.extension)
                                     val authority = "${BuildConfig.APPLICATION_ID}.provider"
                                     data = FileProvider.getUriForFile(view.context, authority, outputFile)
+                                    flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                      Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                })
+                            } else {
+                                // TODO:
+                                //  1. Move the callback to ACTION_DOWN, activating it on the second press
+                                //  2. Add an animation to the button before the user can press it again
+                                Handler(Looper.getMainLooper()).post {
+                                    Toast.makeText(activity, R.string.error_file_not_found,
+                                                   Toast.LENGTH_LONG).show()
+                                }
+                            }
+
+                            MediaScannerConnection.scanFile(
+                                requireView().context, arrayOf(referenceOutputFile.absolutePath), null, null)
+                            if (referenceOutputFile.exists()) {
+                                // Launch external activity via intent to play video recorded using our provider
+                                startActivity(Intent().apply {
+                                    action = Intent.ACTION_VIEW
+                                    type = MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(referenceOutputFile.extension)
+                                    val authority = "${BuildConfig.APPLICATION_ID}.provider"
+                                    data = FileProvider.getUriForFile(view.context, authority, referenceOutputFile)
                                     flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
                                       Intent.FLAG_ACTIVITY_CLEAR_TOP
                                 })
@@ -628,6 +660,7 @@ class PreviewFragment : Fragment() {
         pipeline.cleanup()
         cameraThread.quitSafely()
         encoderSurface.release()
+        referenceEncoderSurface.release()
     }
 
     override fun onDestroyView() {
