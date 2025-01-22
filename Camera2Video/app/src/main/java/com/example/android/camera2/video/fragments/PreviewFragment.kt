@@ -95,10 +95,10 @@ class PreviewFragment : Fragment() {
     private val pipeline: Pipeline by lazy {
         if (args.useHardware) {
             HardwarePipeline(args.width, args.height, args.fps, args.filterOn, args.transfer,
-                    args.dynamicRange, characteristics, encoder, referenceEncoder, fragmentBinding.viewFinder)
+                    args.dynamicRange, characteristics, encoder, referenceEncoder, highBitrateEncoder, fragmentBinding.viewFinder)
         } else {
             SoftwarePipeline(args.width, args.height, args.fps, args.filterOn,
-                    args.dynamicRange, characteristics, encoder, referenceEncoder, fragmentBinding.viewFinder)
+                    args.dynamicRange, characteristics, encoder, referenceEncoder, highBitrateEncoder, fragmentBinding.viewFinder)
         }
     }
 
@@ -123,7 +123,8 @@ class PreviewFragment : Fragment() {
 
     /** File where the recording will be saved */
     private val outputFile: File by lazy { createFile(requireContext(), "mp4") }
-    private val referenceOutputFile: File by lazy { createFile(requireContext(), "ref.mp4") }
+    private val referenceOutputFile: File by lazy { createFile(requireContext(), "reference.mp4") }
+    private val highBitrateOutputFile: File by lazy { createFile(requireContext(), "highBiterate.mp4") }
 
     /**
      * Setup a [Surface] for the encoder
@@ -136,9 +137,14 @@ class PreviewFragment : Fragment() {
         referenceEncoder.getInputSurface()
     }
 
+    private val highBitrateEncoderSurface: Surface by lazy {
+        highBitrateEncoder.getInputSurface()
+    }
+
     /** [EncoderWrapper] utility class */
-    private val encoder: EncoderWrapper by lazy { createEncoder(outputFile) }
-    private val referenceEncoder: EncoderWrapper by lazy { createEncoder(referenceOutputFile) }
+    private val encoder: EncoderWrapper by lazy { createEncoder(outputFile, RECORDER_VIDEO_BITRATE) }
+    private val referenceEncoder: EncoderWrapper by lazy { createEncoder(referenceOutputFile, RECORDER_VIDEO_BITRATE) }
+    private val highBitrateEncoder: EncoderWrapper by lazy { createEncoder(highBitrateOutputFile, RECORDER_VIDEO_HIGH_BITRATE) }
 
     /** [HandlerThread] where all camera operations run */
     private val cameraThread = HandlerThread("CameraThread").apply { start() }
@@ -236,7 +242,7 @@ class PreviewFragment : Fragment() {
         return recordingStarted && !recordingComplete
     }
 
-    private fun createEncoder(outputFile: File): EncoderWrapper {
+    private fun createEncoder(outputFile: File, bitrate: Int): EncoderWrapper {
         var width = args.width
         var height = args.height
         var orientationHint = orientation
@@ -250,7 +256,7 @@ class PreviewFragment : Fragment() {
         }
 
         println("[dichenzhang] createEncoder(): outputFile=$outputFile")
-        return EncoderWrapper(width, height, RECORDER_VIDEO_BITRATE, args.fps,
+        return EncoderWrapper(width, height, bitrate, args.fps,
                 args.dynamicRange, orientationHint, outputFile, args.useMediaRecorder,
                 args.videoCodec)
     }
@@ -395,19 +401,24 @@ class PreviewFragment : Fragment() {
             when (event.action) {
 
                 MotionEvent.ACTION_DOWN -> lifecycleScope.launch(Dispatchers.IO) {
+
+                    Log.e(TAG, "[dichenzhang] PreviewFragment: action down")
+
                     /* If the recording was already started in the past, do nothing. */
                     if (!recordingStarted) {
                         // Prevents screen rotation during the video recording
                         requireActivity().requestedOrientation =
                                 ActivityInfo.SCREEN_ORIENTATION_LOCKED
 
-                        pipeline.actionDown(encoderSurface, false)
-                        pipeline.actionDown(referenceEncoderSurface, true)
+                        pipeline.actionDown(encoderSurface, 0)
+                        pipeline.actionDown(referenceEncoderSurface, 1)
+                        pipeline.actionDown(highBitrateEncoderSurface, 2)
 
                         // Finalizes encoder setup and starts recording
                         recordingStarted = true
                         encoder.start()
                         referenceEncoder.start()
+                        highBitrateEncoder.start()
                         cvRecordingStarted.open()
                         pipeline.startRecording()
 
@@ -431,6 +442,7 @@ class PreviewFragment : Fragment() {
                                     if (isCurrentlyRecording()) {
                                         encoder.frameAvailable()
                                         referenceEncoder.frameAvailable()
+                                        highBitrateEncoder.frameAvailable()
                                     }
                                 }
                             }, cameraHandler)
@@ -455,6 +467,7 @@ class PreviewFragment : Fragment() {
                         /* Wait for at least one frame to process so we don't have an empty video */
                         encoder.waitForFirstFrame()
                         referenceEncoder.waitForFirstFrame()
+                        highBitrateEncoder.waitForFirstFrame()
 
                         session.stopRepeating()
                         session.close()
@@ -492,7 +505,7 @@ class PreviewFragment : Fragment() {
 
                         Log.d(TAG, "Recording stopped. Output file: $outputFile")
 
-                        if (encoder.shutdown() && referenceEncoder.shutdown()) {
+                        if (encoder.shutdown() && referenceEncoder.shutdown() && highBitrateEncoder.shutdown()) {
                             // Broadcasts the media file to the rest of the system
                             MediaScannerConnection.scanFile(
                                 requireView().context, arrayOf(outputFile.absolutePath), null, null)
@@ -673,6 +686,7 @@ class PreviewFragment : Fragment() {
         cameraThread.quitSafely()
         encoderSurface.release()
         referenceEncoderSurface.release()
+        highBitrateEncoderSurface.release()
     }
 
     override fun onDestroyView() {
@@ -684,6 +698,7 @@ class PreviewFragment : Fragment() {
         private val TAG = PreviewFragment::class.java.simpleName
 
         private const val RECORDER_VIDEO_BITRATE: Int = 1_000_000
+        private const val RECORDER_VIDEO_HIGH_BITRATE: Int = 50_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
         /** Creates a [File] named with the current date and time */

@@ -323,9 +323,10 @@ private val EGL_SMPTE2086_MIN_LUMINANCE_EXT            = 0x334A
 class HardwarePipeline(
     width: Int, height: Int, fps: Int, filterOn: Boolean, transfer: Int,
     dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-    referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView,
+    referenceEncoder: EncoderWrapper, highBitrateEncoder: EncoderWrapper,
+    viewFinder: AutoFitSurfaceView,
 ) : Pipeline(width, height, fps, filterOn, dynamicRange,
-             characteristics, encoder, referenceEncoder, viewFinder) {
+             characteristics, encoder, referenceEncoder, highBitrateEncoder, viewFinder) {
     private val renderThread: HandlerThread by lazy {
         val renderThread = HandlerThread("Camera2Video.RenderThread")
         renderThread.start()
@@ -333,7 +334,7 @@ class HardwarePipeline(
     }
 
     private val renderHandler = RenderHandler(renderThread.getLooper(),
-            width, height, fps, filterOn, transfer, dynamicRange, characteristics, encoder, referenceEncoder, viewFinder)
+            width, height, fps, filterOn, transfer, dynamicRange, characteristics, encoder, referenceEncoder, highBitrateEncoder, viewFinder)
 
     override fun createRecordRequest(
         session: CameraCaptureSession,
@@ -373,9 +374,9 @@ class HardwarePipeline(
         return renderHandler.getTargets()
     }
 
-    override fun actionDown(encoderSurface: Surface, isReference: Boolean) {
+    override fun actionDown(encoderSurface: Surface, isReference: Int) {
         renderHandler.sendMessage(renderHandler.obtainMessage(
-                RenderHandler.MSG_ACTION_DOWN, if (isReference) 1 else 0, 0, encoderSurface))
+                RenderHandler.MSG_ACTION_DOWN, isReference, 0, encoderSurface))
     }
 
     override fun clearFrameListener() {
@@ -428,7 +429,8 @@ class HardwarePipeline(
         looper: Looper, width: Int, height: Int, fps: Int,
         filterOn: Boolean, transfer: Int, dynamicRange: Long,
         characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-        referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView,
+        referenceEncoder: EncoderWrapper, highBitrateEncoder: EncoderWrapper,
+        viewFinder: AutoFitSurfaceView,
     ): Handler(looper),
        SurfaceTexture.OnFrameAvailableListener {
         companion object {
@@ -448,6 +450,7 @@ class HardwarePipeline(
         private val dynamicRange = dynamicRange
         private val encoder = encoder
         private val referenceEncoder = referenceEncoder
+        private val highBitrateEncoder = highBitrateEncoder
         private val viewFinder = viewFinder
 
         private var previewSize = Size(0, 0)
@@ -495,6 +498,7 @@ class HardwarePipeline(
         private var eglRenderSurface: EGLSurface? = EGL_NO_SURFACE
         private var eglEncoderSurface: EGLSurface? = EGL_NO_SURFACE
         private var eglReferenceEncoderSurface: EGLSurface? = EGL_NO_SURFACE
+        private var eglHighBitrateEncoderSurface: EGLSurface? = EGL_NO_SURFACE
         private var eglWindowSurface: EGLSurface? = EGL_NO_SURFACE
         private var vertexShader = 0
         private var cameraToRenderFragmentShader = 0
@@ -1151,6 +1155,26 @@ class HardwarePipeline(
           EGL14.eglSwapBuffers(eglDisplay, eglReferenceEncoderSurface)
       }
 
+      private fun copyRenderToHighBitrateEncode() {
+        EGL14.eglMakeCurrent(eglDisplay, eglHighBitrateEncoderSurface, eglRenderSurface, eglContext)
+
+        var viewportWidth = width
+        var viewportHeight = height
+
+        /** Swap width and height if the camera is rotated on its side. */
+        if (orientation == 90 || orientation == 270) {
+          viewportWidth = height
+          viewportHeight = width
+        }
+
+        copyTexture(renderTexId, renderTexture, Rect(0, 0, viewportWidth, viewportHeight),
+                    renderToEncodeShaderProgram!!, false)
+
+        highBitrateEncoder.frameAvailable()
+
+        EGL14.eglSwapBuffers(eglDisplay, eglHighBitrateEncoderSurface)
+      }
+
         @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         private fun createSyncFence() : SyncFence? {
             if (!supportsNativeFences) {
@@ -1170,6 +1194,9 @@ class HardwarePipeline(
             }
         }
 
+        // isReference == 0: encoder with RoI
+        // isReference == 1: reference encoder: encoder without RoI, same setting
+        // isReference == 2: high bitrate encoder
         private fun actionDownImpl(encoderSurface: Surface, isReference: Int) {
             val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
             if (isReference == 0) {
@@ -1184,7 +1211,7 @@ class HardwarePipeline(
                     + ": eglGetError = 0x" + Integer.toHexString(error)
                 )
               }
-            } else {
+            } else if (isReference == 1) {
               eglReferenceEncoderSurface = EGL14.eglCreateWindowSurface(
                 eglDisplay, eglConfig,
                 encoderSurface, surfaceAttribs, 0
@@ -1193,6 +1220,18 @@ class HardwarePipeline(
                 val error = EGL14.eglGetError()
                 throw RuntimeException(
                   "Failed to create EGL reference encoder surface"
+                    + ": eglGetError = 0x" + Integer.toHexString(error)
+                )
+              }
+            } else {
+              eglHighBitrateEncoderSurface = EGL14.eglCreateWindowSurface(
+                eglDisplay, eglConfig,
+                encoderSurface, surfaceAttribs, 0
+              )
+              if (eglHighBitrateEncoderSurface == EGL_NO_SURFACE) {
+                val error = EGL14.eglGetError()
+                throw RuntimeException(
+                  "Failed to create EGL high bitrate encoder surface"
                     + ": eglGetError = 0x" + Integer.toHexString(error)
                 )
               }
@@ -1213,6 +1252,8 @@ class HardwarePipeline(
             eglEncoderSurface = EGL_NO_SURFACE
             EGL14.eglDestroySurface(eglDisplay, eglReferenceEncoderSurface)
             eglReferenceEncoderSurface = EGL_NO_SURFACE
+            EGL14.eglDestroySurface(eglDisplay, eglHighBitrateEncoderSurface)
+            eglHighBitrateEncoderSurface = EGL_NO_SURFACE
             EGL14.eglDestroySurface(eglDisplay, eglRenderSurface)
             eglRenderSurface = EGL_NO_SURFACE
 
@@ -1263,6 +1304,11 @@ class HardwarePipeline(
             /** Copy to the reference encoder surface if we're currently recording. */
             if (eglReferenceEncoderSurface != EGL_NO_SURFACE && currentlyRecording) {
                 copyRenderToReferenceEncode()
+            }
+
+            /** Copy to the high bitrate encoder surface if we're currently recording. */
+            if (eglHighBitrateEncoderSurface != EGL_NO_SURFACE && currentlyRecording) {
+              copyRenderToHighBitrateEncode()
             }
         }
 

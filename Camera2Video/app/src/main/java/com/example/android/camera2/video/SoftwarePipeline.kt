@@ -28,8 +28,9 @@ import com.example.android.camera2.video.EncoderWrapper
 
 class SoftwarePipeline(width: Int, height: Int, fps: Int, filterOn: Boolean,
         dynamicRange: Long, characteristics: CameraCharacteristics, encoder: EncoderWrapper,
-        referenceEncoder: EncoderWrapper, viewFinder: AutoFitSurfaceView) : Pipeline(width, height, fps, filterOn,
-                dynamicRange, characteristics, encoder, referenceEncoder, viewFinder) {
+        referenceEncoder: EncoderWrapper, highBitrateEncoder: EncoderWrapper,
+        viewFinder: AutoFitSurfaceView) : Pipeline(width, height, fps, filterOn,
+                dynamicRange, characteristics, encoder, referenceEncoder, highBitrateEncoder, viewFinder) {
 
     override fun createPreviewRequest(session: CameraCaptureSession,
             previewStabilization: Boolean): CaptureRequest? {
