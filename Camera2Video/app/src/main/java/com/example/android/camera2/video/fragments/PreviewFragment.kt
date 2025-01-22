@@ -331,9 +331,21 @@ class PreviewFragment : Fragment() {
                                 }
 
                                 var top: Int = (sensorWidth - face.bounds.right) * encoderHeight / sensorWidth
-                                var left: Int = face.bounds.top * encoderWidth / sensorHeight
+                                var left: Int = encoderWidth - face.bounds.bottom * encoderWidth / sensorHeight
                                 var bottom: Int = (sensorWidth - face.bounds.left) * encoderHeight / sensorWidth
-                                var right: Int = face.bounds.bottom * encoderWidth / sensorHeight
+                                var right: Int = encoderWidth - face.bounds.top * encoderWidth / sensorHeight
+
+                                // enlarge the detected region by 10% at each side
+                                var horizontal_par: Int = ((right - left + 9) * 0.1).toInt()
+                                var vertical_par: Int = ((bottom - top + 9) * 0.1).toInt()
+                                top -= vertical_par
+                                bottom += vertical_par
+                                left -= horizontal_par
+                                right += horizontal_par
+                                if (top < 0) top = 0
+                                if (bottom > encoderHeight - 1) bottom = encoderHeight - 1
+                                if (left < 0) left = 0
+                                if (right > encoderWidth - 1) right = encoderWidth - 1
 
                                 // Set Qualcomm RoI via Qualcomm vendor key
                                 val config = String.format(
@@ -671,7 +683,7 @@ class PreviewFragment : Fragment() {
     companion object {
         private val TAG = PreviewFragment::class.java.simpleName
 
-        private const val RECORDER_VIDEO_BITRATE: Int = 400_000
+        private const val RECORDER_VIDEO_BITRATE: Int = 1_000_000
         private const val MIN_REQUIRED_RECORDING_TIME_MILLIS: Long = 1000L
 
         /** Creates a [File] named with the current date and time */
