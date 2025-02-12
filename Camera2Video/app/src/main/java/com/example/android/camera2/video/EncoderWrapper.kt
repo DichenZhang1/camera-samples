@@ -16,40 +16,56 @@
 
 package com.example.android.camera2.video
 
+import android.graphics.PixelFormat
+import android.hardware.HardwareBuffer
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.media.Image
+import android.media.ImageReader
 import android.media.MediaCodec
+import android.media.MediaCodec.CodecException
+import android.media.MediaCodec.LinearBlock
+import android.media.MediaCodec.QueueRequest
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.Message
 import android.util.Log
 import android.view.Surface
-
+import androidx.annotation.RequiresApi
 import com.example.android.camera2.video.fragments.VideoCodecFragment
-
 import java.io.File
-import java.io.IOException
 import java.lang.ref.WeakReference
 import java.nio.ByteBuffer
+import java.util.LinkedList
+import java.util.Queue
+import java.util.concurrent.BlockingQueue
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 
 /**
  * Encodes video by streaming to disk.
  */
-class EncoderWrapper(width: Int,
-                     height: Int,
-                     bitRate: Int,
-                     frameRate: Int,
-                     dynamicRange: Long,
-                     orientationHint: Int,
-                     outputFile: File,
-                     useMediaRecorder: Boolean,
-                     videoCodec: Int) {
+@RequiresApi(Build.VERSION_CODES.R)
+class EncoderWrapper(
+    width: Int,
+    height: Int,
+    bitRate: Int,
+    frameRate: Int,
+    dynamicRange: Long,
+    orientationHint: Int,
+    outputFile: File,
+    useMediaRecorder: Boolean,
+    videoCodec: Int,
+) {
     companion object {
         val TAG = "EncoderWrapper"
-        val VERBOSE = false
+        val VERBOSE = true
         val IFRAME_INTERVAL = 1 // sync one frame every second
     }
 
@@ -62,6 +78,16 @@ class EncoderWrapper(width: Int,
     private val mOutputFile = outputFile
     private val mUseMediaRecorder = useMediaRecorder
     private val mVideoCodec = videoCodec
+
+
+    private val mEnqueueExecutor: Executor =
+        Executors.newSingleThreadExecutor { runnable: Runnable? ->
+            Thread(
+                runnable,
+                "enqueue-hwb-encoder"
+            )
+        }
+
 
     private val mMimeType = VideoCodecFragment.idToType(mVideoCodec)
 
@@ -81,6 +107,14 @@ class EncoderWrapper(width: Int,
         }
     }
 
+    private val mImageReader: ImageReader? by lazy {
+        if (useMediaRecorder) {
+            null
+        } else {
+            ImageReader.newInstance(mWidth, mHeight, PixelFormat.RGBA_8888, /*maxImages*/ 60, HardwareBuffer.USAGE_VIDEO_ENCODE)
+        }
+    }
+
     private val mInputSurface: Surface by lazy {
         if (useMediaRecorder) {
             // Get a persistent Surface from MediaCodec, don't forget to release when done
@@ -96,7 +130,52 @@ class EncoderWrapper(width: Int,
 
             surface
         } else {
-            mEncoder!!.createInputSurface()
+            //mEncoder!!.createInputSurface()
+
+            mImageReader!!.setOnImageAvailableListener({ reader ->
+                val image: Image = reader.acquireNextImage()
+                if (image != null) {
+                    mEnqueueExecutor.execute {
+                        try {
+                            Log.i(
+                                TAG,
+                                "Waiting for an available input buffer..."
+                            )
+                            val inputBuffer: Int =
+                                mEncoderThread!!.getInputBuffers().take()
+                            Log.i(
+                                TAG,
+                                "Got input buffer $inputBuffer"
+                            )
+
+                            image.hardwareBuffer.use { hardwareBuffer ->
+                                val queueRequest: QueueRequest =
+                                    mEncoder!!.getQueueRequest(
+                                        inputBuffer
+                                    )
+                                queueRequest.setHardwareBuffer(
+                                    hardwareBuffer!!
+                                )
+                                queueRequest.setPresentationTimeUs(
+                                    image.timestamp / 1000
+                                )
+                                mEncoderThread!!.getOutputImages().offer(image)
+                                queueRequest.queue() // The hwb ownership is NOT transferred to the encoder.
+                            }
+                            image.close()
+                        } catch (e: InterruptedException) {
+                            Log.e(
+                                TAG,
+                                "Interrupted while waiting for input buffer",
+                                e
+                            )
+                            image.close()
+                        }
+                    }
+                }
+            }, createHandler("image-reader"))
+
+            mImageReader!!.getSurface()
         }
     }
 
@@ -114,11 +193,11 @@ class EncoderWrapper(width: Int,
 
             val videoEncoder = when (mVideoCodec) {
                 VideoCodecFragment.VIDEO_CODEC_ID_H264 ->
-                        MediaRecorder.VideoEncoder.H264
+                    MediaRecorder.VideoEncoder.H264
                 VideoCodecFragment.VIDEO_CODEC_ID_HEVC ->
-                        MediaRecorder.VideoEncoder.HEVC
+                    MediaRecorder.VideoEncoder.HEVC
                 VideoCodecFragment.VIDEO_CODEC_ID_AV1 ->
-                        MediaRecorder.VideoEncoder.AV1
+                    MediaRecorder.VideoEncoder.AV1
                 else -> throw IllegalArgumentException("Unknown video codec id")
             }
 
@@ -141,31 +220,33 @@ class EncoderWrapper(width: Int,
             val codecProfile = when (mVideoCodec) {
                 VideoCodecFragment.VIDEO_CODEC_ID_HEVC -> when {
                     dynamicRange == DynamicRangeProfiles.HLG10 ->
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
+                        MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
                     dynamicRange == DynamicRangeProfiles.HDR10 ->
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
+                        MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
                     dynamicRange == DynamicRangeProfiles.HDR10_PLUS ->
-                            MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus
+                        MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus
                     else -> -1
                 }
                 VideoCodecFragment.VIDEO_CODEC_ID_AV1 -> when {
                     dynamicRange == DynamicRangeProfiles.HLG10 ->
-                            MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
+                        MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
                     dynamicRange == DynamicRangeProfiles.HDR10 ->
-                            MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10
+                        MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10
                     dynamicRange == DynamicRangeProfiles.HDR10_PLUS ->
-                            MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10Plus
+                        MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10Plus
                     else -> -1
                 }
                 else -> -1
             }
+
+            mEncoderThread!!.setEncoderCallbacks()
 
             val format = MediaFormat.createVideoFormat(mMimeType, width, height)
 
             // Set some properties.  Failing to specify some of these can cause the MediaCodec
             // configure() call to throw an unhelpful exception.
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL)
@@ -182,7 +263,8 @@ class EncoderWrapper(width: Int,
 
             // Create a MediaCodec encoder, and configure it with our format.  Get a Surface
             // we can use for input and wrap it with a class that handles the EGL work.
-            mEncoder!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            mEncoder!!.configure(format, null, null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE or MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL)
         }
     }
 
@@ -260,7 +342,7 @@ class EncoderWrapper(width: Int,
         if (!mUseMediaRecorder) {
             val handler = mEncoderThread!!.getHandler()
             handler.sendMessage(handler.obtainMessage(
-                    EncoderThread.EncoderHandler.MSG_FRAME_AVAILABLE))
+                EncoderThread.EncoderHandler.MSG_FRAME_AVAILABLE))
         }
     }
 
@@ -269,6 +351,14 @@ class EncoderWrapper(width: Int,
             mEncoderThread!!.waitForFirstFrame()
         }
     }
+
+
+    private fun createHandler(name: String): Handler {
+        val handlerThread = HandlerThread(name)
+        handlerThread.start()
+        return Handler(handlerThread.looper)
+    }
+
 
     /**
      * Object that encapsulates the encoder thread.
@@ -285,15 +375,19 @@ class EncoderWrapper(width: Int,
      * should be fully started before the thread is created, and not shut down until this
      * thread has been joined.
      */
-    private class EncoderThread(mediaCodec: MediaCodec,
-                                outputFile: File,
-                                orientationHint: Int): Thread() {
+    private class EncoderThread(
+        mediaCodec: MediaCodec,
+        outputFile: File,
+        orientationHint: Int,
+    ): Thread() {
         val mEncoder = mediaCodec
         var mEncodedFormat: MediaFormat? = null
-        val mBufferInfo = MediaCodec.BufferInfo()
+//        val mBufferInfo = MediaCodec.BufferInfo()
         val mMuxer = MediaMuxer(outputFile.getPath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val mOrientationHint = orientationHint
         var mVideoTrack: Int = -1
+        val mAvailableInputBuffers: BlockingQueue<Int> = LinkedBlockingQueue()
+        val mImagesToClose: Queue<Image> = LinkedList()
 
         var mHandler: EncoderHandler? = null
         var mFrameNum: Int = 0
@@ -303,7 +397,19 @@ class EncoderWrapper(width: Int,
         @Volatile
         var mReady: Boolean = false
 
-        /**
+
+        public fun getInputBuffers(): BlockingQueue<Int> {
+            return mAvailableInputBuffers
+        }
+
+
+        public fun getOutputImages(): Queue<Image> {
+            return mImagesToClose
+        }
+
+
+        /*
+        *
          * Thread entry point.
          * <p>
          * Prepares the Looper, Handler, and signals anybody watching that we're ready to go.
@@ -372,80 +478,177 @@ class EncoderWrapper(width: Int,
             return mHandler!!
         }
 
+
+        public fun setEncoderCallbacks() {
+            mEncoder.setCallback(
+                object : MediaCodec.Callback() {
+                    override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                        Log.i(TAG, "onInputBufferAvailable $index")
+                        mAvailableInputBuffers.offer(index)
+                    }
+
+                    override fun onOutputBufferAvailable(
+                        codec: MediaCodec,
+                        index: Int,
+                        info: MediaCodec.BufferInfo,
+                    ) {
+                        Log.i(TAG, "onOutputBufferAvailable $index")
+
+                        if (!mImagesToClose.isEmpty()) {
+                            val image: Image = mImagesToClose.poll()
+                            if (image != null) {
+                                Log.i(TAG, "Closing image $image")
+                                image.close()
+                            }
+                        }
+
+                        var encodedData: MediaCodec.OutputFrame = mEncoder.getOutputFrame(index)
+                        if (encodedData == null) {
+                            throw RuntimeException("encoderOutputBuffer " + index +
+                                    " was null");
+                        }
+
+                        if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                            // The codec config data was pulled out when we got the
+                            // INFO_OUTPUT_FORMAT_CHANGED status.  The MediaMuxer won't accept
+                            // a single big blob -- it wants separate csd-0/csd-1 chunks --
+                            // so simply saving this off won't work.
+                            if (VERBOSE) Log.d(TAG, "ignoring BUFFER_FLAG_CODEC_CONFIG")
+                            info.size = 0
+                        }
+
+                        if (info.size != 0) {
+                            // Copy codec buffer into new buffer.
+                            val linearBlock: LinearBlock? = encodedData.getLinearBlock()
+                            val encodedBuffer: ByteBuffer = linearBlock!!.map()
+                            val encodedBufferCopy = ByteBuffer.allocateDirect(info.size)
+                            encodedBufferCopy.put(encodedBuffer)
+                            encodedBufferCopy.flip()
+
+                            // Recycle linear block.
+                            linearBlock.recycle()
+                            Log.i(TAG, String.format("Got encoded buffer %s (t = %d)", encodedBuffer, info.presentationTimeUs));
+
+                            if (mVideoTrack == -1) {
+                                mVideoTrack = mMuxer.addTrack(mEncodedFormat!!)
+                                mMuxer.setOrientationHint(mOrientationHint)
+                                mMuxer.start()
+                                Log.d(TAG, "Started media muxer")
+                            }
+
+                            // mEncBuffer.add(encodedData, mBufferInfo.flags,
+                            //         mBufferInfo.presentationTimeUs)
+                            mMuxer.writeSampleData(mVideoTrack, encodedBufferCopy, info)
+
+
+                            if (VERBOSE) {
+                                Log.d(TAG, "sent " + info.size + " bytes to muxer, ts=" +
+                                        info.presentationTimeUs)
+                            }
+                        }
+
+                        mEncoder.releaseOutputBuffer(index, false)
+
+                        if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                            Log.w(TAG, "reached end of stream unexpectedly")
+                        }
+                    }
+
+
+                    override fun onError(codec: MediaCodec, e: CodecException) {
+                        Log.e(TAG, "codec onError", e)
+                    }
+
+
+                    override fun onOutputFormatChanged(
+                        codec: MediaCodec,
+                        actualFormat: MediaFormat,
+                    ) {
+                        Log.i(TAG, "onOutputFormatChanged $actualFormat")
+                        mEncodedFormat = mEncoder.getOutputFormat()
+//                        mVideoTrack = mMuxer.addTrack(mEncodedFormat!!)
+//                        mMuxer.setOrientationHint(mOrientationHint)
+//                        mMuxer.start()
+                        Log.d(TAG, "Started media muxer")
+
+                    }
+                })
+        }
+
         /**
          * Drains all pending output from the encoder, and adds it to the circular buffer.
          */
-        public fun drainEncoder(): Boolean {
-            val TIMEOUT_USEC: Long = 0     // no timeout -- check for buffers, bail if none
-            var encodedFrame = false
-
-            while (true) {
-                var encoderStatus: Int = mEncoder.dequeueOutputBuffer(mBufferInfo, TIMEOUT_USEC)
-                if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    // no output available yet
-                    break;
-                } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    // Should happen before receiving buffers, and should only happen once.
-                    // The MediaFormat contains the csd-0 and csd-1 keys, which we'll need
-                    // for MediaMuxer.  It's unclear what else MediaMuxer might want, so
-                    // rather than extract the codec-specific data and reconstruct a new
-                    // MediaFormat later, we just grab it here and keep it around.
-                    mEncodedFormat = mEncoder.getOutputFormat()
-                    Log.d(TAG, "encoder output format changed: " + mEncodedFormat)
-                } else if (encoderStatus < 0) {
-                    Log.w(TAG, "unexpected result from encoder.dequeueOutputBuffer: " +
-                            encoderStatus)
-                    // let's ignore it
-                } else {
-                    var encodedData: ByteBuffer? = mEncoder.getOutputBuffer(encoderStatus)
-                    if (encodedData == null) {
-                        throw RuntimeException("encoderOutputBuffer " + encoderStatus +
-                                " was null");
-                    }
-
-                    if ((mBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                        // The codec config data was pulled out when we got the
-                        // INFO_OUTPUT_FORMAT_CHANGED status.  The MediaMuxer won't accept
-                        // a single big blob -- it wants separate csd-0/csd-1 chunks --
-                        // so simply saving this off won't work.
-                        if (VERBOSE) Log.d(TAG, "ignoring BUFFER_FLAG_CODEC_CONFIG")
-                        mBufferInfo.size = 0
-                    }
-
-                    if (mBufferInfo.size != 0) {
-                        // adjust the ByteBuffer values to match BufferInfo (not needed?)
-                        encodedData.position(mBufferInfo.offset)
-                        encodedData.limit(mBufferInfo.offset + mBufferInfo.size)
-
-                        if (mVideoTrack == -1) {
-                            mVideoTrack = mMuxer.addTrack(mEncodedFormat!!)
-                            mMuxer.setOrientationHint(mOrientationHint)
-                            mMuxer.start()
-                            Log.d(TAG, "Started media muxer")
-                        }
-
-                        // mEncBuffer.add(encodedData, mBufferInfo.flags,
-                        //         mBufferInfo.presentationTimeUs)
-                        mMuxer.writeSampleData(mVideoTrack, encodedData, mBufferInfo)
-                        encodedFrame = true
-
-                        if (VERBOSE) {
-                            Log.d(TAG, "sent " + mBufferInfo.size + " bytes to muxer, ts=" +
-                                    mBufferInfo.presentationTimeUs)
-                        }
-                    }
-
-                    mEncoder.releaseOutputBuffer(encoderStatus, false)
-
-                    if ((mBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        Log.w(TAG, "reached end of stream unexpectedly")
-                        break      // out of while
-                    }
-                }
-            }
-
-            return encodedFrame
-        }
+//        public fun drainEncoder(): Boolean {
+//            val TIMEOUT_USEC: Long = 0     // no timeout -- check for buffers, bail if none
+//            var encodedFrame = false
+//
+//            while (true) {
+//                var encoderStatus: Int = mEncoder.dequeueOutputBuffer(mBufferInfo, TIMEOUT_USEC)
+//                if (encoderStatus == MediaCodec.INFO_TRY_AGAIN_LATER) {
+//                    // no output available yet
+//                    break;
+//                } else if (encoderStatus == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+//                    // Should happen before receiving buffers, and should only happen once.
+//                    // The MediaFormat contains the csd-0 and csd-1 keys, which we'll need
+//                    // for MediaMuxer.  It's unclear what else MediaMuxer might want, so
+//                    // rather than extract the codec-specific data and reconstruct a new
+//                    // MediaFormat later, we just grab it here and keep it around.
+//                    mEncodedFormat = mEncoder.getOutputFormat()
+//                    Log.d(TAG, "encoder output format changed: " + mEncodedFormat)
+//                } else if (encoderStatus < 0) {
+//                    Log.w(TAG, "unexpected result from encoder.dequeueOutputBuffer: " +
+//                            encoderStatus)
+//                    // let's ignore it
+//                } else {
+//                    var encodedData: ByteBuffer? = mEncoder.getOutputBuffer(encoderStatus)
+//                    if (encodedData == null) {
+//                        throw RuntimeException("encoderOutputBuffer " + encoderStatus +
+//                                " was null");
+//                    }
+//
+//                    if ((mBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+//                        // The codec config data was pulled out when we got the
+//                        // INFO_OUTPUT_FORMAT_CHANGED status.  The MediaMuxer won't accept
+//                        // a single big blob -- it wants separate csd-0/csd-1 chunks --
+//                        // so simply saving this off won't work.
+//                        if (VERBOSE) Log.d(TAG, "ignoring BUFFER_FLAG_CODEC_CONFIG")
+//                        mBufferInfo.size = 0
+//                    }
+//
+//                    if (mBufferInfo.size != 0) {
+//                        // adjust the ByteBuffer values to match BufferInfo (not needed?)
+//                        encodedData.position(mBufferInfo.offset)
+//                        encodedData.limit(mBufferInfo.offset + mBufferInfo.size)
+//
+//                        if (mVideoTrack == -1) {
+//                            mVideoTrack = mMuxer.addTrack(mEncodedFormat!!)
+//                            mMuxer.setOrientationHint(mOrientationHint)
+//                            mMuxer.start()
+//                            Log.d(TAG, "Started media muxer")
+//                        }
+//
+//                        // mEncBuffer.add(encodedData, mBufferInfo.flags,
+//                        //         mBufferInfo.presentationTimeUs)
+//                        mMuxer.writeSampleData(mVideoTrack, encodedData, mBufferInfo)
+//                        encodedFrame = true
+//
+//                        if (VERBOSE) {
+//                            Log.d(TAG, "sent " + mBufferInfo.size + " bytes to muxer, ts=" +
+//                                    mBufferInfo.presentationTimeUs)
+//                        }
+//                    }
+//
+//                    mEncoder.releaseOutputBuffer(encoderStatus, false)
+//
+//                    if ((mBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+//                        Log.w(TAG, "reached end of stream unexpectedly")
+//                        break      // out of while
+//                    }
+//                }
+//            }
+//
+//            return encodedFrame
+//        }
 
         /**
          * Drains the encoder output.
@@ -454,7 +657,7 @@ class EncoderWrapper(width: Int,
          */
         fun frameAvailable() {
             if (VERBOSE) Log.d(TAG, "frameAvailable")
-            if (drainEncoder()) {
+            if (/*drainEncoder()*/ true) {
                 synchronized (mLock) {
                     mFrameNum++
                     mLock.notify()
